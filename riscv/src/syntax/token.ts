@@ -3,15 +3,27 @@ import { TextSpan } from "../parser/textSpan";
 import { Trivia } from "./trivia";
 import { TriviaList } from "./triviaList";
 
-export enum TokenKind {
+export enum SyntaxKind {
     Identifier,
-    SemicolonToken,
     Comma,
-    UnaryOperator,
-    LeftParen,
-    RightParen,
+    MinusToken,
+    OpenParen,
+    CloseParen,
     EndOfFile,
-    NumericConstant
+    NumericLiteralToken,
+    UnaryMinusExpression,
+    AddCommand,
+    AddImmediateCommand,
+    JumpRegisterPseudoCommand,
+    CallPseudoCommand,
+    NumericLiteralExpression,
+    ColonToken,
+    StoreByte,
+    LoadWord,
+    StoreDoubleWord,
+    LoadDoubleWord,
+    StoreWord,
+    LoadByte
 }
 
 export class Token {
@@ -19,25 +31,39 @@ export class Token {
     fullSpan = new TextSpan()
     leadingTrivia = new TriviaList()
     trailingTrivia = new TriviaList()
-    kind: TokenKind
+    kind: SyntaxKind
     sourceCode: SourceCode
 
-    get value(): string {
+    get value(): any {
+        switch (this.kind) {
+            case SyntaxKind.NumericLiteralToken:
+                const numericValue = +this.valueText
+                if (isNaN(numericValue)) {
+                    throw new Error(`Error converting '${this.valueText}' to numeric literal`)
+                }
+                return +this.valueText
+            default:
+                return this.valueText
+            // throw new Error(`Invalid kind '${this.kind}' found when converting token value`);
+        }
+    }
+
+    get valueText(): string {
         return this.sourceCode.getSegment(this.span.start, this.span.end)
     }
 
-    get valueFull(): string {
+    get valueTextFull(): string {
         return this.sourceCode.getSegment(this.fullSpan.start, this.fullSpan.end)
     }
 
     get kindText(): string {
-        return TokenKind[this.kind]
+        return SyntaxKind[this.kind]
     }
 
-    constructor(span: TextSpan, kind: TokenKind, sourceCode: SourceCode)
-    constructor(span: TextSpan, kind: TokenKind, sourceCode: SourceCode,
+    constructor(span: TextSpan, kind: SyntaxKind, sourceCode: SourceCode)
+    constructor(span: TextSpan, kind: SyntaxKind, sourceCode: SourceCode,
         leadingTrivia: Trivia[], trailingTrivia: Trivia[])
-    constructor(span: TextSpan, kind: TokenKind, sourceCode: SourceCode,
+    constructor(span: TextSpan, kind: SyntaxKind, sourceCode: SourceCode,
         leadingTrivia: Trivia[] = [], trailingTrivia: Trivia[] = []) {
         this.span = span
         this.kind = kind

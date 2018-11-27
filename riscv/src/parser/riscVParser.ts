@@ -1,15 +1,16 @@
 import {
-    AddCommand, AddImmediateCommand, Command, JumpAndLinkCommand,
-    JumpAndLinkRegisterCommand, MemoryCommand, MemoryCommandType
-} from "../addCommandSyntax";
-import { SourceCode } from "./sourceCode";
+    AddCommand, Command, AddImmediateCommand, Expression, MemoryCommand,
+    PrefixUnaryExpression, JumpRegisterPseudoCommand, CallPseudoCommand, NumericLiteralExpression
+} from "../syntax/addCommandSyntax";
 import { Compilation } from "../syntax/compilation";
 import { Label } from "../syntax/label";
+import { SyntaxKind, Token } from "../syntax/token";
+import { SyntaxTokens } from "../syntax/syntaxTokens";
 
 export class RiscVParser {
-    private readonly commandSizeBytes = 4
+    private readonly commandSizeBytes = 1
     private readonly labels: { [label: string]: Label } = {}
-    private readonly sourceCode: SourceCode
+    private readonly syntaxTokens: SyntaxTokens
     private currentAddress = 0
 
     private commandNames: { [key: string]: boolean } = {
@@ -21,229 +22,211 @@ export class RiscVParser {
         call: true
     }
 
-    constructor(sourceCode: SourceCode) {
-        this.sourceCode = sourceCode
+    constructor(syntaxTokens: SyntaxTokens) {
+        this.syntaxTokens = syntaxTokens
     }
 
-    compile(): Compilation {
+    parse(): Compilation {
         const commands: Command[] = []
-        while (true) {
-            const commandOrLabel = this.parseLine()
+        while (this.syntaxTokens.hasNext) {
+            const commandOrLabel = this.parseCommandOrLabel()
 
             if (commandOrLabel instanceof Command) {
-                commands[commandOrLabel.address] = commandOrLabel
+                commands[this.currentAddress] = commandOrLabel
+                this.currentAddress += this.commandSizeBytes
 
-            } else
-                this.labels[commandOrLabel.name] = commandOrLabel
-            let currentChar = this.sourceCode.peekChar
-            if (currentChar === "\0") {
-                currentChar = this.sourceCode.nextChar()
+            } else {
+                this.labels[commandOrLabel.nameToken.value] = commandOrLabel
+            }
+
+            if (this.syntaxTokens.peekToken.kind === SyntaxKind.EndOfFile) {
+                this.syntaxTokens.eatToken(SyntaxKind.EndOfFile)
                 break;
             }
         }
 
         // todo remove this hax
-        const temp: any = undefined
-        commands.push(temp)
-        commands.push(temp)
-        commands.push(temp)
+        // const temp: any = undefined
+        // commands.push(temp)
+        // commands.push(temp)
+        // commands.push(temp)
         return new Compilation(commands, this.labels)
     }
 
-    private parseLine(): Command | Label {
-        const commandNameOrLabel = this.parseToken()
+    private parseCommandOrLabel(): Command | Label {
+        const identifierToken = this.syntaxTokens.eatToken(SyntaxKind.Identifier)
         let commandOrLabel: Command | Label
-        const isCommand = this.commandNames[commandNameOrLabel]
+        const isCommand = !!this.commandNames[identifierToken.valueText]
         if (isCommand) {
-            commandOrLabel = this.parseCommand(commandNameOrLabel)
+            commandOrLabel = this.parseCommand(identifierToken)
         } else {
-            commandOrLabel = this.parseLabel(commandNameOrLabel)
+            commandOrLabel = this.parseLabel(identifierToken)
         }
-        const currentChar = this.sourceCode.nextChar()
+
         return commandOrLabel
     }
 
-    private parseCommand(commandName: string): Command {
-        const currentChar = this.sourceCode.nextChar()
-        if (currentChar !== " ") throw new Error("expected a space after command name")
+    private parseCommand(nameToken: Token): Command {
         let command: Command
-        switch (commandName) {
+        switch (nameToken.valueText) {
             case "add":
-                command = this.parseAddCommand()
+                command = this.parseAddCommand(nameToken)
                 break;
             case "addi":
-                command = this.parseAddImmediateCommand()
+                command = this.parseAddImmediateCommand(nameToken)
                 break;
             case "sb":
+                command = this.parseMemoryCommand(nameToken, SyntaxKind.StoreByte)
+                break
             case "sw":
+                command = this.parseMemoryCommand(nameToken, SyntaxKind.StoreWord)
+                break
             case "sd":
-                command = this.parseMemoryCommand(commandName, "store")
+                command = this.parseMemoryCommand(nameToken, SyntaxKind.StoreDoubleWord)
+                break;
+            case "lb":
+                command = this.parseMemoryCommand(nameToken, SyntaxKind.LoadByte)
                 break;
             case "lw":
+                command = this.parseMemoryCommand(nameToken, SyntaxKind.LoadWord)
+                break;
             case "ld":
-                command = this.parseMemoryCommand(commandName, "load")
+                command = this.parseMemoryCommand(nameToken, SyntaxKind.LoadDoubleWord)
                 break;
             case "jr":
-                command = this.parseJumpRegisterPseudoCommand(commandName)
-                break;
-            case "jal":
-                command = this.parseJumpRegisterPseudoCommand(commandName)
-                break;
-            case "ret":
-                command = this.parseReturnPseudoCommand(commandName)
+                command = this.parseJumpRegisterPseudoCommand(nameToken)
                 break;
             case "call":
-                command = this.parseCallCommand(commandName)
+                command = this.parseCallPseudoCommand(nameToken)
                 break;
             default:
-                throw new Error(`invalid command '${commandName}'`)
+                throw new Error(`invalid command '${nameToken.valueText}'`)
         }
-        const address = this.currentAddress
-        command.address = address
-        this.currentAddress += this.commandSizeBytes
-        // const parameters = this.parseParameters()
-        // return { name: commandName, parameters: parameters }
+
         return command
     }
 
-    private parseLabel(labelName: string): Label {
-        const currentChar = this.sourceCode.nextChar()
-        if (currentChar !== ":") throw new Error("expected a ':' after label name")
-        return new Label(labelName, this.currentAddress)
+    private parseLabel(name: Token): Label {
+        const openParen = this.syntaxTokens.eatToken(SyntaxKind.OpenParen)
+        const closeParen = this.syntaxTokens.eatToken(SyntaxKind.CloseParen)
+        const colon = this.syntaxTokens.eatToken(SyntaxKind.ColonToken)
+
+        return new Label(
+            name,
+            openParen,
+            closeParen,
+            colon,
+            this.currentAddress
+        )
     }
 
-    private parseAddCommand(): AddCommand {
-        const destinationRegister = this.parseRegister()
-        const comma1 = this.sourceCode.nextChar()
-        if (comma1 !== ",") throw new Error(`expected ',', but was '${comma1}'`)
-        this.sourceCode.nextChar()
-        const sourceRegisterOne = this.parseRegister()
-        const comma2 = this.sourceCode.nextChar()
-        if (comma2 !== ",") throw new Error(`expected ',', but was '${comma2}'`)
-        this.sourceCode.nextChar()
-        const sourceRegisterTwo = this.parseRegister()
-        return new AddCommand({
-            sourceRegisterOne,
-            sourceRegisterTwo,
-            destinationRegister
-        })
+    private parseAddCommand(nameToken: Token): AddCommand {
+        const destinationRegisterToken = this.syntaxTokens.eatToken(SyntaxKind.Identifier)
+        const firstCommmaToken = this.syntaxTokens.eatToken(SyntaxKind.Comma)
+        const sourceRegisterOneToken = this.syntaxTokens.eatToken(SyntaxKind.Identifier)
+        const secondCommaToken = this.syntaxTokens.eatToken(SyntaxKind.Comma)
+        const sourceRegisterTwoToken = this.syntaxTokens.eatToken(SyntaxKind.Identifier)
+
+        return new AddCommand(
+            nameToken,
+            firstCommmaToken,
+            secondCommaToken,
+            sourceRegisterOneToken,
+            sourceRegisterTwoToken,
+            destinationRegisterToken
+        )
     }
 
-    private parseAddImmediateCommand(): AddImmediateCommand {
-        const destinationRegister = this.parseRegister()
-        const comma1 = this.sourceCode.nextChar()
-        if (comma1 !== ",") throw new Error(`expected ',', but was '${comma1}'`)
-        this.sourceCode.nextChar()
-        const sourceRegister = this.parseRegister()
-        const comma2 = this.sourceCode.nextChar()
-        if (comma2 !== ",") throw new Error(`expected ',', but was '${comma2}'`)
-        const temp = this.sourceCode.nextChar()
-        const constantValueText = this.parseToken()
-        const constantValue = +constantValueText
-        if (isNaN(constantValue)) {
-            throw new Error(`invalid constant value '${constantValueText}'`)
+    private parseAddImmediateCommand(nameToken: Token): AddImmediateCommand {
+        const destinationRegisterToken = this.syntaxTokens.eatToken(SyntaxKind.Identifier)
+        const firstCommaToken = this.syntaxTokens.eatToken(SyntaxKind.Comma)
+        const sourceRegisterToken = this.syntaxTokens.eatToken(SyntaxKind.Identifier)
+        const secondCommaToken = this.syntaxTokens.eatToken(SyntaxKind.Comma)
+        const expression = this.parseExpression()
+
+        return new AddImmediateCommand(
+            nameToken,
+            firstCommaToken,
+            secondCommaToken,
+            sourceRegisterToken,
+            expression,
+            destinationRegisterToken
+        )
+    }
+
+    private parseExpression(): Expression {
+        let expression: Expression
+        switch (this.syntaxTokens.peekToken.kind) {
+            case SyntaxKind.NumericLiteralToken:
+                expression = this.parseNumericLiteralExpression()
+                break;
+            case SyntaxKind.MinusToken:
+                expression = this.parsePrefixUnaryExpression()
+                break;
+            default:
+                throw new Error("Invalid expression")
         }
-        return new AddImmediateCommand({
-            sourceRegister,
-            constantValue,
-            destinationRegister
-        })
+        return expression
     }
 
-    private parseMemoryCommand(commandName: string, commandType: MemoryCommandType): MemoryCommand {
-        const dataRegister = this.parseRegister()
-        const comma1 = this.sourceCode.nextChar()
-        if (comma1 !== ",") throw new Error(`expected ',', but was '${comma1}'`)
-        this.sourceCode.nextChar()
+    private parseNumericLiteralExpression(): NumericLiteralExpression {
+        const numericLiteralToken = this.syntaxTokens.eatToken(SyntaxKind.NumericLiteralToken)
 
-        const offsetString = this.parseTokenUntil("(")
-        const memoryOffset = +offsetString
-        if (isNaN(memoryOffset)) throw new Error(`Invalid offset ${offsetString}`)
-        this.sourceCode.nextChar()
-
-        const memoryRegisterString = this.parseTokenUntil(")")
-        const memoryRegister = this.parseRegisterFromString(memoryRegisterString)
-        if (isNaN(memoryRegister)) throw new Error(`Invalid offset ${memoryRegisterString}`)
-        this.sourceCode.nextChar()
-
-        return new MemoryCommand({
-            name: commandName,
-            type: commandType,
-            dataRegister,
-            memoryOffset,
-            memoryRegister
-        })
+        return new NumericLiteralExpression(numericLiteralToken)
     }
 
-    private parseJumpRegisterPseudoCommand(commandName: string): JumpAndLinkRegisterCommand {
-        const returnRegister = this.parseRegister()
-        return new JumpAndLinkRegisterCommand({
-            name: commandName,
+    private parsePrefixUnaryExpression(): PrefixUnaryExpression {
+        const operatorToken = this.syntaxTokens.eatToken()
+        let operatorKind: SyntaxKind
+        switch (operatorToken.kind) {
+            case SyntaxKind.MinusToken:
+                operatorKind = SyntaxKind.UnaryMinusExpression
+                break;
+            default:
+                throw new Error(`invalid prefix unary operator '${operatorToken.value}'`)
+        }
+        const operand = this.syntaxTokens.eatToken(SyntaxKind.NumericLiteralToken);
+
+        return new PrefixUnaryExpression(
+            operatorKind,
+            operatorToken,
+            operand
+        )
+    }
+
+    private parseMemoryCommand(nameToken: Token, kind: SyntaxKind): MemoryCommand {
+        const dataRegisterToken = this.syntaxTokens.eatToken(SyntaxKind.Identifier)
+        const commaToken = this.syntaxTokens.eatToken(SyntaxKind.Comma)
+        const memoryOffsetToken = this.syntaxTokens.eatToken(SyntaxKind.NumericLiteralToken)
+        const openParenToken = this.syntaxTokens.eatToken(SyntaxKind.OpenParen)
+        const memoryRegisterToken = this.syntaxTokens.eatToken(SyntaxKind.Identifier)
+        const closeParenToken = this.syntaxTokens.eatToken(SyntaxKind.CloseParen)
+
+        return new MemoryCommand(
+            nameToken,
+            kind,
+            commaToken,
+            dataRegisterToken,
+            memoryOffsetToken,
+            memoryRegisterToken,
+            openParenToken,
+            closeParenToken
+        )
+    }
+
+    private parseJumpRegisterPseudoCommand(nameToken: Token): JumpRegisterPseudoCommand {
+        const returnRegister = this.syntaxTokens.eatToken(SyntaxKind.Identifier)
+        return new JumpRegisterPseudoCommand(
+            nameToken,
             returnRegister
-        })
+        )
     }
 
-    private parseReturnPseudoCommand(commandName: string): JumpAndLinkRegisterCommand {
-        return new JumpAndLinkRegisterCommand({
-            name: commandName,
-            returnRegister: 1
-        })
-    }
-
-    private parseCallCommand(commandName: string): JumpAndLinkCommand {
-        const labelName = this.parseToken()
-        const label = this.labels[labelName]
-        if (!label) {
-            throw new Error(`Could not find label with name '${labelName}'`)
-        }
-        return new JumpAndLinkCommand({
-            name: commandName,
-            returnRegister: 1,
-            procedureAddress: label.address
-        })
-    }
-
-    // private parseJumpAndLinkCommand(commandName: string): JumpRegisterCommand {
-    //     const returnRegister = this.parseRegister()
-    //     return new JumpRegisterCommand({
-    //         name: commandName,
-    //         returnRegister: returnRegister
-    //     })
-    // }
-
-    private parseRegister(): number {
-        const registerToken = this.parseToken()
-        if (!registerToken.startsWith("x")) {
-            throw new Error(`Expected register starting with 'x', but instead was '${registerToken}'`)
-        }
-        return this.parseRegisterFromString(registerToken)
-    }
-
-    private parseRegisterFromString(registerToken: string): number {
-        const numberSlice = registerToken.slice(1)
-        const registerNumber = +numberSlice
-        return registerNumber
-    }
-
-    private parseToken(): string {
-        let token = ""
-        while (true) {
-            const currentChar = this.sourceCode.peekChar
-            if (currentChar === " " || currentChar === "\n" || currentChar === ","
-                || currentChar === ":") {
-                return token
-            }
-            token += this.sourceCode.nextChar()
-        }
-    }
-
-    private parseTokenUntil(char: string): string {
-        let token = ""
-        let currentChar = this.sourceCode.peekChar
-        while (currentChar !== char) {
-            token += this.sourceCode.nextChar()
-            currentChar = this.sourceCode.peekChar
-        }
-        return token
+    private parseCallPseudoCommand(nameToken: Token): CallPseudoCommand {
+        const functionName = this.syntaxTokens.eatToken(SyntaxKind.Identifier)
+        return new CallPseudoCommand(
+            nameToken,
+            functionName,
+        )
     }
 }
