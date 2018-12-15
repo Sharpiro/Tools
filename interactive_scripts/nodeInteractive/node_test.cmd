@@ -1,1 +1,0 @@
-node -r node_functions.js
